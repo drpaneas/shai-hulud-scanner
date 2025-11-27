@@ -163,16 +163,35 @@ func (s *DiskScanner) parseIOCCSV(reader io.Reader) error {
 func (s *DiskScanner) loadOfflinePackages() {
 	fmt.Printf("%s[WARN]%s Running in offline mode with limited package list\n", colorYellow, colorReset)
 
+	// Critical packages from Shai-Hulud 2.0 "Second Coming" campaign
+	// Sources: Wiz, Datadog, Tenable, PostHog, Postman, Zapier incident reports
 	criticalPackages := map[string][]string{
-		"@postman/tunnel-agent":           {"2.0.19", "2.0.20", "2.0.21"},
-		"posthog-node":                    {"4.3.2", "4.3.3"},
-		"posthog-js":                      {"1.205.1", "1.205.2"},
-		"kill-port":                       {"2.0.2", "2.0.3"},
-		"shell-exec":                      {"1.1.3", "1.1.4"},
-		"zapier-platform-cli":             {"18.0.2", "18.0.3", "18.0.4"},
+		// Postman - 17 packages, 51 versions affected
+		"@postman/tunnel-agent": {"0.6.5", "0.6.6", "0.6.7", "2.0.19", "2.0.20", "2.0.21"},
+
+		// PostHog - confirmed affected versions
+		"posthog-node": {"4.3.2", "4.3.3", "4.18.1", "5.11.3", "5.13.3"},
+		"posthog-js":   {"1.205.1", "1.205.2", "1.297.3"},
+
+		// Zapier - confirmed affected versions
+		"zapier-platform-cli":  {"18.0.2", "18.0.3", "18.0.4"},
+		"zapier-platform-core": {"18.0.2", "18.0.3", "18.0.4"},
+		"zapier-sdk":           {"18.0.2", "18.0.3", "18.0.4"},
+		"babel-preset-zapier":  {"1.0.0", "1.0.1"},
+
+		// AsyncAPI - patient zero
+		"@asyncapi/cli":                   {"6.8.2", "6.8.3", "6.9.1", "6.10.1"},
 		"@asyncapi/specs":                 {"6.8.2", "6.8.3", "6.9.1", "6.10.1"},
 		"@asyncapi/openapi-schema-parser": {"3.0.25", "3.0.26"},
-		"@browserbasehq/stagehand":        {"3.0.4"},
+
+		// ENS Domains
+		"@ensdomains/hardhat-chai-matchers-viem": {"1.0.0", "1.0.1"},
+		"ethereum-ens": {"0.8.0", "0.8.1"},
+
+		// Other known affected
+		"kill-port":                {"2.0.2", "2.0.3"},
+		"shell-exec":               {"1.1.3", "1.1.4"},
+		"@browserbasehq/stagehand": {"3.0.4"},
 	}
 
 	for pkg, versions := range criticalPackages {
