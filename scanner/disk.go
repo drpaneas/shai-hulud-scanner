@@ -733,16 +733,21 @@ func (s *DiskScanner) processFile(path string) {
 		}
 		return
 
-	case "cloud.json", "contents.json", "environment.json", "truffleSecrets.json":
-		// These exfiltration files can appear anywhere
+	case "truffleSecrets.json":
+		// This filename is highly specific to Shai-Hulud malware - flag immediately
 		s.addFinding(Finding{
 			Type:        "EXFILTRATION_DATA",
 			Severity:    "CRITICAL",
 			Path:        path,
-			Description: fmt.Sprintf("Found %s - Shai-Hulud exfiltration data file", name),
-			Details:     "Contains stolen credentials harvested by the malware.",
+			Description: "Found truffleSecrets.json - Shai-Hulud exfiltration data file",
+			Details:     "This filename is specific to Shai-Hulud malware credential harvesting.",
 			Campaign:    "Shai-Hulud-v2",
 		})
+		return
+
+	case "cloud.json", "contents.json", "environment.json":
+		// These are generic filenames - verify content before flagging
+		s.checkPotentialExfilFile(path, name)
 		return
 	}
 
@@ -829,6 +834,98 @@ func (s *DiskScanner) checkVerifyJSFile(path string) {
 			return
 		}
 	}
+}
+
+// checkPotentialExfilFile verifies if a generic JSON file contains actual exfiltration data
+// Files like contents.json, cloud.json, environment.json are common in legitimate projects,
+// so we check content before flagging to avoid false positives
+func (s *DiskScanner) checkPotentialExfilFile(path string, name string) {
+	bufPtr := s.bufferPool.Get().(*[]byte)
+	defer s.bufferPool.Put(bufPtr)
+
+	file, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer func() { _ = file.Close() }()
+
+	n, _ := file.Read(*bufPtr)
+	if n == 0 {
+		return
+	}
+	content := (*bufPtr)[:n]
+
+	// Check for malware-specific indicators in the content
+	var indicators []string
+
+	// 1. Check for Shai-Hulud specific strings
+	malwareStrings := [][]byte{
+		[]byte("SHA1HULUD"),
+		[]byte("Sha1-Hulud"),
+		[]byte("trufflehog"),
+		[]byte("truffleSecrets"),
+		[]byte("The Second Coming"),
+		[]byte("bun_environment"),
+	}
+	for _, pattern := range malwareStrings {
+		if bytes.Contains(content, pattern) {
+			indicators = append(indicators, fmt.Sprintf("Contains '%s'", string(pattern)))
+		}
+	}
+
+	// 2. Check for credential patterns that suggest stolen data
+	credentialPatterns := []struct {
+		pattern *regexp.Regexp
+		name    string
+	}{
+		{regexp.MustCompile(`ghp_[a-zA-Z0-9]{36}`), "GitHub PAT"},
+		{regexp.MustCompile(`gho_[a-zA-Z0-9]{36}`), "GitHub OAuth"},
+		{regexp.MustCompile(`glpat-[a-zA-Z0-9_-]{20}`), "GitLab PAT"},
+		{regexp.MustCompile(`AKIA[0-9A-Z]{16}`), "AWS Access Key"},
+		{regexp.MustCompile(`npm_[a-zA-Z0-9]{36}`), "npm Token"},
+	}
+	for _, cp := range credentialPatterns {
+		if cp.pattern.Match(content) {
+			indicators = append(indicators, fmt.Sprintf("Contains %s", cp.name))
+		}
+	}
+
+	// 3. Check for large base64 encoded blobs (malware uses triple base64 encoding)
+	// Look for lines that are mostly base64 characters and > 200 chars
+	base64Pattern := regexp.MustCompile(`[A-Za-z0-9+/=]{200,}`)
+	if matches := base64Pattern.FindAll(content, 3); len(matches) > 0 {
+		indicators = append(indicators, fmt.Sprintf("Contains %d large base64 blob(s)", len(matches)))
+	}
+
+	// 4. Check if file is in a suspicious location
+	suspiciousLocations := []string{
+		".github",
+		".truffler-cache",
+		"node_modules",
+	}
+	for _, loc := range suspiciousLocations {
+		if strings.Contains(path, loc+string(filepath.Separator)) {
+			indicators = append(indicators, fmt.Sprintf("Located in %s/", loc))
+		}
+	}
+
+	// Only flag if we found actual indicators
+	if len(indicators) >= 1 {
+		severity := "HIGH"
+		if len(indicators) >= 2 {
+			severity = "CRITICAL"
+		}
+
+		s.addFinding(Finding{
+			Type:        "POTENTIAL_EXFILTRATION",
+			Severity:    severity,
+			Path:        path,
+			Description: fmt.Sprintf("Found %s with suspicious content", name),
+			Details:     fmt.Sprintf("Indicators: %s", strings.Join(indicators, "; ")),
+			Campaign:    "Shai-Hulud-v2",
+		})
+	}
+	// If no indicators found, file is likely legitimate - don't flag
 }
 
 func (s *DiskScanner) checkMaliciousWorkflow(path string, name string) {
