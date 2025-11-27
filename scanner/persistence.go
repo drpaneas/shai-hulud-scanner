@@ -76,7 +76,7 @@ func (ps *PersistenceScanner) ScanGitHooks() {
 			continue
 		}
 
-		filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
+		_ = filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return nil
 			}
@@ -259,7 +259,7 @@ func (ps *PersistenceScanner) ScanPackageLockIntegrity() {
 			continue
 		}
 
-		filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
+		_ = filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return nil
 			}

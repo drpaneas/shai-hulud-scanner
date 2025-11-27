@@ -58,12 +58,12 @@ func runCheck(cmd *cobra.Command, args []string) {
 		fmt.Printf("%s[ERROR]%s Failed to fetch IOC list: %v\n", ColorRed, ColorReset, err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Parse CSV
 	infectedPkgs := make(map[string][]string)
 	csvReader := csv.NewReader(resp.Body)
-	csvReader.Read() // Skip header
+	_, _ = csvReader.Read() // Skip header
 
 	versionRegex := regexp.MustCompile(`=\s*(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?)`)
 

@@ -178,7 +178,7 @@ func (as *AdvancedScanner) ScanForObfuscatedPayloads(rootPath string) {
 		}
 
 		// Quick walk with early termination
-		filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
+		_ = filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return nil
 			}
@@ -228,7 +228,7 @@ func (as *AdvancedScanner) checkLargeJSFile(path string, size int64) {
 	if err != nil {
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// Read first 64KB for pattern analysis
 	buf := make([]byte, 64*1024)
@@ -456,7 +456,7 @@ func (as *AdvancedScanner) ScanWorkflows(rootPath string) {
 		return
 	}
 
-	filepath.Walk(workflowsDir, func(path string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(workflowsDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return nil
 		}

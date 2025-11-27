@@ -103,7 +103,7 @@ func (hs *HistoryScanner) scanHistoryFile(path string) {
 	if err != nil {
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	scanner := bufio.NewScanner(file)
 	lineNum := 0
@@ -304,7 +304,7 @@ func (hs *HistoryScanner) ScanGitRemotes() {
 	}
 
 	for _, searchPath := range searchPaths {
-		filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
+		_ = filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return nil
 			}

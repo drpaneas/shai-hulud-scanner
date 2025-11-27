@@ -144,7 +144,7 @@ func runScan(cmd *cobra.Command, args []string) {
 		fmt.Printf("%s%s  TOTAL FINDINGS: %d - IMMEDIATE ACTION REQUIRED%s\n", ColorBold, ColorRed, totalFindings, ColorReset)
 		fmt.Printf("%s%s══════════════════════════════════════════════════════════════════%s\n", ColorBold, ColorRed, ColorReset)
 		fmt.Print("\nPress Enter to exit...")
-		bufio.NewReader(os.Stdin).ReadBytes('\n')
+		_, _ = bufio.NewReader(os.Stdin).ReadBytes('\n')
 		os.Exit(1)
 	}
 }

@@ -107,7 +107,7 @@ func (s *DiskScanner) fetchInfectedPackages() error {
 	if err != nil {
 		return fmt.Errorf("failed to fetch IOC list: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to fetch IOC list: HTTP %d", resp.StatusCode)
@@ -250,7 +250,7 @@ func (s *DiskScanner) Scan(rootPath string) {
 		}
 	}()
 
-	godirwalk.Walk(rootPath, &godirwalk.Options{
+	_ = godirwalk.Walk(rootPath, &godirwalk.Options{
 		Unsorted:            true,
 		FollowSymbolicLinks: false,
 		Callback: func(path string, de *godirwalk.Dirent) error {
@@ -385,7 +385,7 @@ func (s *DiskScanner) checkSetupBunFile(path string) {
 	if err != nil {
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	n, _ := file.Read(*bufPtr)
 	content := (*bufPtr)[:n]
@@ -423,7 +423,7 @@ func (s *DiskScanner) checkVerifyJSFile(path string) {
 	if err != nil {
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	n, _ := file.Read(*bufPtr)
 	content := (*bufPtr)[:n]
@@ -461,7 +461,7 @@ func (s *DiskScanner) checkMaliciousWorkflow(path string, name string) {
 	if err != nil {
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	n, _ := file.Read(*bufPtr)
 	content := (*bufPtr)[:n]
@@ -512,7 +512,7 @@ func (s *DiskScanner) checkWorkflowForShaiHulud(path string) {
 	if err != nil {
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	n, _ := file.Read(*bufPtr)
 	content := (*bufPtr)[:n]
@@ -562,7 +562,7 @@ func (s *DiskScanner) checkPackageJSON(path string) {
 	if err != nil {
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	n, _ := file.Read(*bufPtr)
 	content := (*bufPtr)[:n]
@@ -669,7 +669,7 @@ func (s *DiskScanner) checkForInfectedPackage(path string) {
 	if err != nil {
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	n, _ := file.Read(*bufPtr)
 	content := (*bufPtr)[:n]
