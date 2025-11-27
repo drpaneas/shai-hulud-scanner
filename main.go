@@ -1,6 +1,6 @@
 package main
 
-import "shai-hulud-scanner/cmd"
+import "github.com/drpaneas/shai-hulud-scanner/cmd"
 
 func main() {
 	cmd.Execute()

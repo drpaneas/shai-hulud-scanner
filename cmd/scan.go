@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"shai-hulud-scanner/scanner"
+	"github.com/drpaneas/shai-hulud-scanner/scanner"
 
 	"github.com/spf13/cobra"
 )
