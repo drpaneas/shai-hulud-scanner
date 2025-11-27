@@ -1,4 +1,4 @@
-module shai-hulud-scanner
+module github.com/drpaneas/shai-hulud-scanner
 
 go 1.25
 
