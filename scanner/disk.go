@@ -509,7 +509,7 @@ func (s *DiskScanner) loadOfflinePackages() {
 
 		// ENS Domains
 		"@ensdomains/hardhat-chai-matchers-viem": {[]string{"1.0.0", "1.0.1"}, "Shai-Hulud-v2"},
-		"ethereum-ens": {[]string{"0.8.0", "0.8.1"}, "Shai-Hulud-v2"},
+		"ethereum-ens":                           {[]string{"0.8.0", "0.8.1"}, "Shai-Hulud-v2"},
 
 		// Other known affected
 		"kill-port":                {[]string{"2.0.2", "2.0.3"}, "Shai-Hulud-v2"},
@@ -1031,18 +1031,95 @@ func (s *DiskScanner) checkDependenciesForInfected(path string, content []byte) 
 		allDeps[k] = v
 	}
 
+	// Get the project directory (where package.json is located)
+	projectDir := filepath.Dir(path)
+
 	for depName := range allDeps {
-		if pkgIOC, infected := s.infectedPkgs[depName]; infected {
+		pkgIOC, infected := s.infectedPkgs[depName]
+		if !infected {
+			continue
+		}
+
+		// Auto-verify: Check the actual installed version in node_modules
+		verdict := s.verifyInstalledVersion(projectDir, depName, pkgIOC)
+
+		switch verdict.status {
+		case "INFECTED":
 			s.addFinding(Finding{
 				Type:        "INFECTED_DEPENDENCY",
-				Severity:    "HIGH",
+				Severity:    "CRITICAL",
 				Path:        path,
-				Description: fmt.Sprintf("Package '%s' depends on potentially infected package: %s", pkgFull.Name, depName),
-				Details:     "Run: npm ls " + depName + " to check installed version",
+				Description: fmt.Sprintf("🚨 CONFIRMED: Package '%s' has INFECTED dependency: %s@%s", pkgFull.Name, depName, verdict.version),
+				Details:     fmt.Sprintf("Verdict: INFECTED - Installed version %s matches known malicious version", verdict.version),
 				Campaign:    pkgIOC.Campaign,
 			})
+		case "SAFE":
+			// Don't report - installed version is not in the malicious list
+			// Optionally log at debug level
+		case "NOT_INSTALLED":
+			// Dependency listed but not installed - skip silently
+		case "UNKNOWN":
+			// Could not determine version - only report for high-risk campaigns
+			if pkgIOC.Campaign == "Shai-Hulud-v2" {
+				s.addFinding(Finding{
+					Type:        "UNVERIFIED_DEPENDENCY",
+					Severity:    "MEDIUM",
+					Path:        path,
+					Description: fmt.Sprintf("Package '%s' depends on package with malicious versions: %s", pkgFull.Name, depName),
+					Details:     fmt.Sprintf("Verdict: UNVERIFIED - Could not read installed version. Run: npm ls %s", depName),
+					Campaign:    pkgIOC.Campaign,
+				})
+			}
 		}
 	}
+}
+
+// VersionVerdict represents the result of version verification
+type VersionVerdict struct {
+	status  string // "INFECTED", "SAFE", "NOT_INSTALLED", "UNKNOWN"
+	version string
+}
+
+// verifyInstalledVersion checks the actual installed version against known malicious versions
+func (s *DiskScanner) verifyInstalledVersion(projectDir, depName string, pkgIOC *PackageIOC) VersionVerdict {
+	// Handle scoped packages (e.g., @babel/core -> node_modules/@babel/core)
+	depPath := depName
+	if strings.HasPrefix(depName, "@") {
+		// Scoped package: @scope/name
+		depPath = depName
+	}
+
+	// Check in node_modules
+	nodeModulesPath := filepath.Join(projectDir, "node_modules", depPath, "package.json")
+
+	content, err := os.ReadFile(nodeModulesPath)
+	if err != nil {
+		// Package not installed or can't read
+		if os.IsNotExist(err) {
+			return VersionVerdict{status: "NOT_INSTALLED", version: ""}
+		}
+		return VersionVerdict{status: "UNKNOWN", version: ""}
+	}
+
+	var pkg struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(content, &pkg); err != nil {
+		return VersionVerdict{status: "UNKNOWN", version: ""}
+	}
+
+	installedVersion := strings.TrimSpace(pkg.Version)
+	if installedVersion == "" {
+		return VersionVerdict{status: "UNKNOWN", version: ""}
+	}
+
+	// Check if installed version is in the malicious versions list
+	if pkgIOC.Versions[installedVersion] {
+		return VersionVerdict{status: "INFECTED", version: installedVersion}
+	}
+
+	// Version not in malicious list - SAFE
+	return VersionVerdict{status: "SAFE", version: installedVersion}
 }
 
 func (s *DiskScanner) checkForInfectedPackage(path string) {
@@ -1235,4 +1312,3 @@ func (s *DiskScanner) ExportJSON(filename string) error {
 	}
 	return os.WriteFile(filename, data, 0644)
 }
-
