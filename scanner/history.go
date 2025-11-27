@@ -278,12 +278,14 @@ func (hs *HistoryScanner) ScanGitRemotes() {
 		filepath.Join(hs.homeDir, "work"),
 	}
 
+	// These are exfiltration repo patterns - NOT the scanner repo itself
+	// The malware creates repos with descriptions like "Sha1Hulud: The Second Coming"
 	maliciousRepoPatterns := []string{
-		"Sha1-Hulud",
-		"SHA1HULUD",
-		"shai-hulud",
-		"Shai-Hulud",
+		"Sha1-Hulud: The Second Coming",
+		"Sha1-Hulud: The Continued Coming",
+		"SHA1HULUD: The Second Coming",
 		"The-Second-Coming",
+		"The-Continued-Coming",
 	}
 
 	for _, searchPath := range searchPaths {
