@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
@@ -18,7 +19,20 @@ import (
 	"github.com/karrick/godirwalk"
 )
 
-const WizIOCPackagesURL = "https://raw.githubusercontent.com/wiz-sec-public/wiz-research-iocs/main/reports/shai-hulud-2-packages.csv"
+// IOC Data Sources
+const (
+	// Wiz Research - Shai-Hulud v2 specific packages
+	WizIOCPackagesURL = "https://raw.githubusercontent.com/wiz-sec-public/wiz-research-iocs/main/reports/shai-hulud-2-packages.csv"
+
+	// OSSF Malicious Packages - Broad malicious npm package database
+	OSSFMaliciousPackagesURL = "https://raw.githubusercontent.com/Red-Hat-Information-Security/Incident-Response/refs/heads/main/data/ossf-malicious-npm-packages.txt"
+
+	// RHIS Malicious Packages - Red Hat InfoSec with campaign attribution
+	RHISMaliciousPackagesURL = "https://raw.githubusercontent.com/Red-Hat-Information-Security/Incident-Response/refs/heads/main/data/rhis-malicious-npm-packages.csv"
+
+	// RHIS Host IOCs - File and directory indicators of compromise
+	RHISHostIOCsURL = "https://raw.githubusercontent.com/Red-Hat-Information-Security/Incident-Response/refs/heads/main/data/rhis-malicious-npm-package-host-iocs.csv"
+)
 
 // Pre-compiled byte patterns for ultra-fast matching
 var (
@@ -56,6 +70,21 @@ type Finding struct {
 	Path        string `json:"path"`
 	Description string `json:"description"`
 	Details     string `json:"details,omitempty"`
+	Campaign    string `json:"campaign,omitempty"`
+}
+
+// PackageIOC represents a malicious package with version and campaign info
+type PackageIOC struct {
+	Versions map[string]bool
+	Campaign string
+}
+
+// HostIOC represents a file or directory indicator of compromise
+type HostIOC struct {
+	IOCType     string         // "file" or "directory"
+	Pattern     *regexp.Regexp // Compiled glob pattern
+	Description string
+	Campaign    string
 }
 
 // DiskScanner handles filesystem scanning
@@ -64,7 +93,8 @@ type DiskScanner struct {
 	findingsMutex sync.Mutex
 	scannedFiles  atomic.Int64
 	scannedDirs   atomic.Int64
-	infectedPkgs  map[string]map[string]bool
+	infectedPkgs  map[string]*PackageIOC
+	hostIOCs      []HostIOC
 	workers       int
 	offline       bool
 	bufferPool    sync.Pool
@@ -81,7 +111,8 @@ type PackageJSON struct {
 func NewDiskScanner(workers int, offline bool) *DiskScanner {
 	return &DiskScanner{
 		findings:     make([]Finding, 0, 100),
-		infectedPkgs: make(map[string]map[string]bool),
+		infectedPkgs: make(map[string]*PackageIOC),
+		hostIOCs:     make([]HostIOC, 0),
 		workers:      workers,
 		offline:      offline,
 		bufferPool: sync.Pool{
@@ -98,25 +129,108 @@ func (s *DiskScanner) FindingCount() int {
 	return len(s.findings)
 }
 
-// fetchInfectedPackages downloads the IOC list
+// fetchInfectedPackages downloads IOC lists from multiple sources
 func (s *DiskScanner) fetchInfectedPackages() error {
-	fmt.Printf("%s[INFO]%s Fetching latest IOC list from Wiz Research...\n", colorBlue, colorReset)
-
 	client := &http.Client{Timeout: 30 * time.Second}
+	var fetchErrors []string
+
+	// 1. Fetch Wiz Research IOC list (Shai-Hulud specific)
+	fmt.Printf("%s[INFO]%s Fetching Wiz Research IOC list...\n", colorBlue, colorReset)
+	if err := s.fetchWizIOCs(client); err != nil {
+		fetchErrors = append(fetchErrors, fmt.Sprintf("Wiz: %v", err))
+	}
+
+	// 2. Fetch OSSF Malicious Packages (broad coverage)
+	fmt.Printf("%s[INFO]%s Fetching OSSF malicious package database...\n", colorBlue, colorReset)
+	if err := s.fetchOSSFPackages(client); err != nil {
+		fetchErrors = append(fetchErrors, fmt.Sprintf("OSSF: %v", err))
+	}
+
+	// 3. Fetch RHIS Malicious Packages (with campaign attribution)
+	fmt.Printf("%s[INFO]%s Fetching RHIS malicious package database...\n", colorBlue, colorReset)
+	if err := s.fetchRHISPackages(client); err != nil {
+		fetchErrors = append(fetchErrors, fmt.Sprintf("RHIS: %v", err))
+	}
+
+	// 4. Fetch RHIS Host IOCs (file/directory patterns)
+	fmt.Printf("%s[INFO]%s Fetching RHIS host IOC database...\n", colorBlue, colorReset)
+	if err := s.fetchRHISHostIOCs(client); err != nil {
+		fetchErrors = append(fetchErrors, fmt.Sprintf("RHIS Host IOCs: %v", err))
+	}
+
+	if len(s.infectedPkgs) == 0 {
+		return fmt.Errorf("failed to fetch any IOC databases: %v", fetchErrors)
+	}
+
+	if len(fetchErrors) > 0 {
+		fmt.Printf("%s[WARN]%s Some IOC sources failed: %v\n", colorYellow, colorReset, fetchErrors)
+	}
+
+	return nil
+}
+
+// fetchWizIOCs fetches Shai-Hulud specific IOCs from Wiz Research
+func (s *DiskScanner) fetchWizIOCs(client *http.Client) error {
 	resp, err := client.Get(WizIOCPackagesURL)
 	if err != nil {
-		return fmt.Errorf("failed to fetch IOC list: %w", err)
+		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to fetch IOC list: HTTP %d", resp.StatusCode)
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	return s.parseIOCCSV(resp.Body)
+	return s.parseWizCSV(resp.Body)
 }
 
-func (s *DiskScanner) parseIOCCSV(reader io.Reader) error {
+// fetchOSSFPackages fetches the OSSF malicious package list
+func (s *DiskScanner) fetchOSSFPackages(client *http.Client) error {
+	resp, err := client.Get(OSSFMaliciousPackagesURL)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	return s.parseOSSFPackages(resp.Body)
+}
+
+// fetchRHISPackages fetches RHIS malicious packages with campaign info
+func (s *DiskScanner) fetchRHISPackages(client *http.Client) error {
+	resp, err := client.Get(RHISMaliciousPackagesURL)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	return s.parseRHISPackages(resp.Body)
+}
+
+// fetchRHISHostIOCs fetches file/directory IOC patterns
+func (s *DiskScanner) fetchRHISHostIOCs(client *http.Client) error {
+	resp, err := client.Get(RHISHostIOCsURL)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	return s.parseRHISHostIOCs(resp.Body)
+}
+
+// parseWizCSV parses the Wiz Research CSV format
+func (s *DiskScanner) parseWizCSV(reader io.Reader) error {
 	csvReader := csv.NewReader(reader)
 	header, err := csvReader.Read()
 	if err != nil {
@@ -128,6 +242,7 @@ func (s *DiskScanner) parseIOCCSV(reader io.Reader) error {
 	}
 
 	versionRegex := regexp.MustCompile(`=\s*(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?)`)
+	count := 0
 
 	for {
 		record, err := csvReader.Read()
@@ -144,20 +259,225 @@ func (s *DiskScanner) parseIOCCSV(reader io.Reader) error {
 		}
 
 		if s.infectedPkgs[packageName] == nil {
-			s.infectedPkgs[packageName] = make(map[string]bool)
+			s.infectedPkgs[packageName] = &PackageIOC{
+				Versions: make(map[string]bool),
+				Campaign: "Shai-Hulud-v2",
+			}
+			count++
 		}
 
 		if len(record) >= 2 && record[1] != "" {
 			for _, match := range versionRegex.FindAllStringSubmatch(record[1], -1) {
 				if len(match) >= 2 {
-					s.infectedPkgs[packageName][strings.TrimSpace(match[1])] = true
+					s.infectedPkgs[packageName].Versions[strings.TrimSpace(match[1])] = true
 				}
 			}
 		}
 	}
 
-	fmt.Printf("%s[INFO]%s Loaded %d infected packages from IOC database\n", colorGreen, colorReset, len(s.infectedPkgs))
+	fmt.Printf("%s[INFO]%s Loaded %d packages from Wiz Research\n", colorGreen, colorReset, count)
 	return nil
+}
+
+// parseOSSFPackages parses the OSSF malicious packages list (name@version format)
+func (s *DiskScanner) parseOSSFPackages(reader io.Reader) error {
+	scanner := bufio.NewScanner(reader)
+	count := 0
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Format: package_name@version
+		parts := strings.Split(line, "@")
+		if len(parts) < 2 {
+			continue
+		}
+
+		packageName := strings.ToLower(parts[0])
+		version := strings.ToLower(parts[1])
+
+		if s.infectedPkgs[packageName] == nil {
+			s.infectedPkgs[packageName] = &PackageIOC{
+				Versions: make(map[string]bool),
+				Campaign: "OSSF-Malicious-Packages",
+			}
+			count++
+		}
+
+		s.infectedPkgs[packageName].Versions[version] = true
+	}
+
+	fmt.Printf("%s[INFO]%s Loaded %d packages from OSSF database\n", colorGreen, colorReset, count)
+	return scanner.Err()
+}
+
+// parseRHISPackages parses the RHIS CSV with campaign attribution
+func (s *DiskScanner) parseRHISPackages(reader io.Reader) error {
+	csvReader := csv.NewReader(reader)
+	header, err := csvReader.Read()
+	if err != nil {
+		return fmt.Errorf("failed to read CSV header: %w", err)
+	}
+
+	// Find column indices
+	pkgNameIdx, pkgVersionIdx, campaignIdx := -1, -1, -1
+	for i, col := range header {
+		switch strings.ToLower(strings.TrimSpace(col)) {
+		case "package_name":
+			pkgNameIdx = i
+		case "package_version":
+			pkgVersionIdx = i
+		case "campaign_name":
+			campaignIdx = i
+		}
+	}
+
+	if pkgNameIdx == -1 || pkgVersionIdx == -1 {
+		return fmt.Errorf("missing required columns in RHIS CSV")
+	}
+
+	count := 0
+	for {
+		record, err := csvReader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil || len(record) <= pkgNameIdx || len(record) <= pkgVersionIdx {
+			continue
+		}
+
+		packageName := strings.TrimSpace(record[pkgNameIdx])
+		version := strings.TrimSpace(record[pkgVersionIdx])
+		campaign := ""
+		if campaignIdx >= 0 && len(record) > campaignIdx {
+			campaign = strings.TrimSpace(record[campaignIdx])
+		}
+
+		if packageName == "" || version == "" {
+			continue
+		}
+
+		if s.infectedPkgs[packageName] == nil {
+			s.infectedPkgs[packageName] = &PackageIOC{
+				Versions: make(map[string]bool),
+				Campaign: campaign,
+			}
+			count++
+		} else if campaign != "" && s.infectedPkgs[packageName].Campaign == "" {
+			// Update campaign if we have one and previous entry didn't
+			s.infectedPkgs[packageName].Campaign = campaign
+		}
+
+		s.infectedPkgs[packageName].Versions[version] = true
+	}
+
+	fmt.Printf("%s[INFO]%s Loaded %d packages from RHIS database\n", colorGreen, colorReset, count)
+	return nil
+}
+
+// parseRHISHostIOCs parses the host IOC CSV (file/directory patterns)
+func (s *DiskScanner) parseRHISHostIOCs(reader io.Reader) error {
+	csvReader := csv.NewReader(reader)
+	header, err := csvReader.Read()
+	if err != nil {
+		return fmt.Errorf("failed to read CSV header: %w", err)
+	}
+
+	// Find column indices
+	iocTypeIdx, iocValueIdx, descIdx, campaignIdx := -1, -1, -1, -1
+	for i, col := range header {
+		switch strings.ToLower(strings.TrimSpace(col)) {
+		case "ioc_type":
+			iocTypeIdx = i
+		case "ioc_value":
+			iocValueIdx = i
+		case "ioc_description":
+			descIdx = i
+		case "campaign_name":
+			campaignIdx = i
+		}
+	}
+
+	if iocTypeIdx == -1 || iocValueIdx == -1 {
+		return fmt.Errorf("missing required columns in RHIS Host IOC CSV")
+	}
+
+	homeDir, _ := os.UserHomeDir()
+	count := 0
+
+	for {
+		record, err := csvReader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil || len(record) <= iocTypeIdx || len(record) <= iocValueIdx {
+			continue
+		}
+
+		iocType := strings.ToLower(strings.TrimSpace(record[iocTypeIdx]))
+		iocValue := strings.TrimSpace(record[iocValueIdx])
+
+		// Only process file and directory IOCs
+		if iocType != "file" && iocType != "directory" {
+			continue
+		}
+
+		// Expand ~ to home directory
+		if strings.HasPrefix(iocValue, "~/") {
+			iocValue = filepath.Join(homeDir, iocValue[2:])
+		} else if iocValue == "~" {
+			iocValue = homeDir
+		}
+
+		// Convert glob pattern to regex
+		pattern, err := globToRegex(iocValue)
+		if err != nil {
+			continue
+		}
+
+		description := ""
+		if descIdx >= 0 && len(record) > descIdx {
+			description = strings.TrimSpace(record[descIdx])
+		}
+
+		campaign := ""
+		if campaignIdx >= 0 && len(record) > campaignIdx {
+			campaign = strings.TrimSpace(record[campaignIdx])
+		}
+
+		s.hostIOCs = append(s.hostIOCs, HostIOC{
+			IOCType:     iocType,
+			Pattern:     pattern,
+			Description: description,
+			Campaign:    campaign,
+		})
+		count++
+	}
+
+	fmt.Printf("%s[INFO]%s Loaded %d host IOC patterns from RHIS database\n", colorGreen, colorReset, count)
+	return nil
+}
+
+// globToRegex converts a glob pattern to a compiled regex
+func globToRegex(pattern string) (*regexp.Regexp, error) {
+	// Escape special regex characters except * and ?
+	escaped := regexp.QuoteMeta(pattern)
+
+	// Convert glob wildcards to regex
+	// ** matches any path (including separators)
+	escaped = strings.ReplaceAll(escaped, `\*\*`, `.*`)
+	// * matches anything except path separator
+	escaped = strings.ReplaceAll(escaped, `\*`, `[^/]*`)
+	// ? matches single character
+	escaped = strings.ReplaceAll(escaped, `\?`, `.`)
+
+	// Anchor the pattern
+	escaped = "^" + escaped + "$"
+
+	return regexp.Compile(escaped)
 }
 
 func (s *DiskScanner) loadOfflinePackages() {
@@ -165,39 +485,45 @@ func (s *DiskScanner) loadOfflinePackages() {
 
 	// Critical packages from Shai-Hulud 2.0 "Second Coming" campaign
 	// Sources: Wiz, Datadog, Tenable, PostHog, Postman, Zapier incident reports
-	criticalPackages := map[string][]string{
+	criticalPackages := map[string]struct {
+		versions []string
+		campaign string
+	}{
 		// Postman - 17 packages, 51 versions affected
-		"@postman/tunnel-agent": {"0.6.5", "0.6.6", "0.6.7", "2.0.19", "2.0.20", "2.0.21"},
+		"@postman/tunnel-agent": {[]string{"0.6.5", "0.6.6", "0.6.7", "2.0.19", "2.0.20", "2.0.21"}, "Shai-Hulud-v2"},
 
 		// PostHog - confirmed affected versions
-		"posthog-node": {"4.3.2", "4.3.3", "4.18.1", "5.11.3", "5.13.3"},
-		"posthog-js":   {"1.205.1", "1.205.2", "1.297.3"},
+		"posthog-node": {[]string{"4.3.2", "4.3.3", "4.18.1", "5.11.3", "5.13.3"}, "Shai-Hulud-v2"},
+		"posthog-js":   {[]string{"1.205.1", "1.205.2", "1.297.3"}, "Shai-Hulud-v2"},
 
 		// Zapier - confirmed affected versions
-		"zapier-platform-cli":  {"18.0.2", "18.0.3", "18.0.4"},
-		"zapier-platform-core": {"18.0.2", "18.0.3", "18.0.4"},
-		"zapier-sdk":           {"18.0.2", "18.0.3", "18.0.4"},
-		"babel-preset-zapier":  {"1.0.0", "1.0.1"},
+		"zapier-platform-cli":  {[]string{"18.0.2", "18.0.3", "18.0.4"}, "Shai-Hulud-v2"},
+		"zapier-platform-core": {[]string{"18.0.2", "18.0.3", "18.0.4"}, "Shai-Hulud-v2"},
+		"zapier-sdk":           {[]string{"18.0.2", "18.0.3", "18.0.4"}, "Shai-Hulud-v2"},
+		"babel-preset-zapier":  {[]string{"1.0.0", "1.0.1"}, "Shai-Hulud-v2"},
 
 		// AsyncAPI - patient zero
-		"@asyncapi/cli":                   {"6.8.2", "6.8.3", "6.9.1", "6.10.1"},
-		"@asyncapi/specs":                 {"6.8.2", "6.8.3", "6.9.1", "6.10.1"},
-		"@asyncapi/openapi-schema-parser": {"3.0.25", "3.0.26"},
+		"@asyncapi/cli":                   {[]string{"6.8.2", "6.8.3", "6.9.1", "6.10.1"}, "Shai-Hulud-v2"},
+		"@asyncapi/specs":                 {[]string{"6.8.2", "6.8.3", "6.9.1", "6.10.1"}, "Shai-Hulud-v2"},
+		"@asyncapi/openapi-schema-parser": {[]string{"3.0.25", "3.0.26"}, "Shai-Hulud-v2"},
 
 		// ENS Domains
-		"@ensdomains/hardhat-chai-matchers-viem": {"1.0.0", "1.0.1"},
-		"ethereum-ens": {"0.8.0", "0.8.1"},
+		"@ensdomains/hardhat-chai-matchers-viem": {[]string{"1.0.0", "1.0.1"}, "Shai-Hulud-v2"},
+		"ethereum-ens": {[]string{"0.8.0", "0.8.1"}, "Shai-Hulud-v2"},
 
 		// Other known affected
-		"kill-port":                {"2.0.2", "2.0.3"},
-		"shell-exec":               {"1.1.3", "1.1.4"},
-		"@browserbasehq/stagehand": {"3.0.4"},
+		"kill-port":                {[]string{"2.0.2", "2.0.3"}, "Shai-Hulud-v2"},
+		"shell-exec":               {[]string{"1.1.3", "1.1.4"}, "Shai-Hulud-v2"},
+		"@browserbasehq/stagehand": {[]string{"3.0.4"}, "Shai-Hulud-v2"},
 	}
 
-	for pkg, versions := range criticalPackages {
-		s.infectedPkgs[pkg] = make(map[string]bool)
-		for _, v := range versions {
-			s.infectedPkgs[pkg][v] = true
+	for pkg, info := range criticalPackages {
+		s.infectedPkgs[pkg] = &PackageIOC{
+			Versions: make(map[string]bool),
+			Campaign: info.campaign,
+		}
+		for _, v := range info.versions {
+			s.infectedPkgs[pkg].Versions[v] = true
 		}
 	}
 
@@ -208,6 +534,26 @@ func (s *DiskScanner) addFinding(finding Finding) {
 	s.findingsMutex.Lock()
 	s.findings = append(s.findings, finding)
 	s.findingsMutex.Unlock()
+}
+
+// checkHostIOCs checks a path against host IOC patterns
+func (s *DiskScanner) checkHostIOCs(path string, iocType string) {
+	for _, ioc := range s.hostIOCs {
+		if ioc.IOCType != iocType {
+			continue
+		}
+		if ioc.Pattern.MatchString(path) {
+			s.addFinding(Finding{
+				Type:        "HOST_IOC",
+				Severity:    "CRITICAL",
+				Path:        path,
+				Description: fmt.Sprintf("IoC: %s", ioc.Description),
+				Details:     fmt.Sprintf("Pattern matched: %s", ioc.Pattern.String()),
+				Campaign:    ioc.Campaign,
+			})
+			return // Only report first match
+		}
+	}
 }
 
 // Scan performs the filesystem scan
@@ -229,7 +575,8 @@ func (s *DiskScanner) Scan(rootPath string) {
 
 	fmt.Printf("\n%s[INFO]%s Scanning path: %s\n", colorBlue, colorReset, rootPath)
 	fmt.Printf("%s[INFO]%s Using %d worker goroutines\n", colorBlue, colorReset, s.workers)
-	fmt.Printf("%s[INFO]%s Tracking %d infected packages\n\n", colorBlue, colorReset, len(s.infectedPkgs))
+	fmt.Printf("%s[INFO]%s Tracking %d infected packages\n", colorBlue, colorReset, len(s.infectedPkgs))
+	fmt.Printf("%s[INFO]%s Tracking %d host IOC patterns\n\n", colorBlue, colorReset, len(s.hostIOCs))
 
 	startTime := time.Now()
 
@@ -285,8 +632,12 @@ func (s *DiskScanner) Scan(rootPath string) {
 						Path:        path,
 						Description: "Found .truffler-cache directory - Shai-Hulud malware indicator",
 						Details:     "Hidden directory created by malware for Trufflehog binary storage.",
+						Campaign:    "Shai-Hulud-v2",
 					})
 				}
+
+				// Check directory against host IOC patterns
+				s.checkHostIOCs(path, "directory")
 
 				if _, skip := skipDirs[name]; skip {
 					return godirwalk.SkipThis
@@ -331,6 +682,9 @@ func (s *DiskScanner) processFile(path string) {
 	s.scannedFiles.Add(1)
 	name := filepath.Base(path)
 
+	// Check file against host IOC patterns
+	s.checkHostIOCs(path, "file")
+
 	switch name {
 	case "bun_environment.js":
 		s.addFinding(Finding{
@@ -339,6 +693,7 @@ func (s *DiskScanner) processFile(path string) {
 			Path:        path,
 			Description: "Found bun_environment.js - Main Shai-Hulud malware payload",
 			Details:     "Obfuscated malware that steals credentials and propagates.",
+			Campaign:    "Shai-Hulud-v2",
 		})
 		return
 
@@ -359,6 +714,7 @@ func (s *DiskScanner) processFile(path string) {
 				Path:        path,
 				Description: "Found Trufflehog binary in .truffler-cache directory",
 				Details:     "Malware uses Trufflehog to scan for secrets.",
+				Campaign:    "Shai-Hulud-v2",
 			})
 		}
 		return
@@ -385,6 +741,7 @@ func (s *DiskScanner) processFile(path string) {
 			Path:        path,
 			Description: fmt.Sprintf("Found %s - Shai-Hulud exfiltration data file", name),
 			Details:     "Contains stolen credentials harvested by the malware.",
+			Campaign:    "Shai-Hulud-v2",
 		})
 		return
 	}
@@ -430,6 +787,7 @@ func (s *DiskScanner) checkSetupBunFile(path string) {
 			Path:        path,
 			Description: "Found malicious setup_bun.js loader script",
 			Details:     strings.Join(details, "; "),
+			Campaign:    "Shai-Hulud-v2",
 		})
 	}
 }
@@ -466,6 +824,7 @@ func (s *DiskScanner) checkVerifyJSFile(path string) {
 				Path:        path,
 				Description: "Found verify.js with Shai-Hulud malware patterns",
 				Details:     fmt.Sprintf("Contains: %s", string(pattern)),
+				Campaign:    "Shai-Hulud-v2",
 			})
 			return
 		}
@@ -519,6 +878,7 @@ func (s *DiskScanner) checkMaliciousWorkflow(path string, name string) {
 			Path:        path,
 			Description: fmt.Sprintf("Found malicious %s GitHub workflow backdoor", name),
 			Details:     strings.Join(details, "; "),
+			Campaign:    "Shai-Hulud-v2",
 		})
 	}
 }
@@ -556,6 +916,7 @@ func (s *DiskScanner) checkWorkflowForShaiHulud(path string) {
 				Path:        path,
 				Description: "GitHub workflow contains Shai-Hulud malware pattern",
 				Details:     fmt.Sprintf("Found: %s", string(pattern)),
+				Campaign:    "Shai-Hulud-v2",
 			})
 			return
 		}
@@ -569,6 +930,7 @@ func (s *DiskScanner) checkWorkflowForShaiHulud(path string) {
 			Path:        path,
 			Description: "GitHub workflow with self-hosted runner and discussion injection",
 			Details:     "This pattern matches the Shai-Hulud attack vector",
+			Campaign:    "Shai-Hulud-v2",
 		})
 	}
 }
@@ -621,6 +983,7 @@ func (s *DiskScanner) checkPackageJSON(path string) {
 						Path:        path,
 						Description: fmt.Sprintf("Package '%s' has Shai-Hulud %s script", pkg.Name, scriptType),
 						Details:     fmt.Sprintf("%s: %s", scriptType, script),
+						Campaign:    "Shai-Hulud-v2",
 					})
 					return
 				}
@@ -635,6 +998,7 @@ func (s *DiskScanner) checkPackageJSON(path string) {
 						Path:        path,
 						Description: fmt.Sprintf("Package '%s' has suspicious %s script with '%s'", pkg.Name, scriptType, pattern),
 						Details:     fmt.Sprintf("%s: %s", scriptType, script),
+						Campaign:    "Unknown",
 					})
 					return
 				}
@@ -668,13 +1032,14 @@ func (s *DiskScanner) checkDependenciesForInfected(path string, content []byte) 
 	}
 
 	for depName := range allDeps {
-		if _, infected := s.infectedPkgs[depName]; infected {
+		if pkgIOC, infected := s.infectedPkgs[depName]; infected {
 			s.addFinding(Finding{
 				Type:        "INFECTED_DEPENDENCY",
 				Severity:    "HIGH",
 				Path:        path,
 				Description: fmt.Sprintf("Package '%s' depends on potentially infected package: %s", pkgFull.Name, depName),
 				Details:     "Run: npm ls " + depName + " to check installed version",
+				Campaign:    pkgIOC.Campaign,
 			})
 		}
 	}
@@ -698,15 +1063,16 @@ func (s *DiskScanner) checkForInfectedPackage(path string) {
 		return
 	}
 
-	if versions, exists := s.infectedPkgs[pkg.Name]; exists {
-		if len(versions) > 0 {
-			if versions[pkg.Version] {
+	if pkgIOC, exists := s.infectedPkgs[pkg.Name]; exists {
+		if len(pkgIOC.Versions) > 0 {
+			if pkgIOC.Versions[pkg.Version] {
 				s.addFinding(Finding{
 					Type:        "INFECTED_PACKAGE",
 					Severity:    "CRITICAL",
 					Path:        path,
 					Description: fmt.Sprintf("Found infected package: %s@%s", pkg.Name, pkg.Version),
-					Details:     "This package version is compromised by Shai-Hulud v2.",
+					Details:     "This package version is compromised.",
+					Campaign:    pkgIOC.Campaign,
 				})
 			}
 		} else {
@@ -716,6 +1082,7 @@ func (s *DiskScanner) checkForInfectedPackage(path string) {
 				Path:        path,
 				Description: fmt.Sprintf("Potentially infected package: %s@%s", pkg.Name, pkg.Version),
 				Details:     "Package in IOC list but version-specific data unavailable.",
+				Campaign:    pkgIOC.Campaign,
 			})
 		}
 	}
@@ -730,6 +1097,7 @@ func (s *DiskScanner) checkForInfectedPackage(path string) {
 						Path:        path,
 						Description: fmt.Sprintf("Package '%s@%s' has malicious %s script", pkg.Name, pkg.Version, scriptType),
 						Details:     fmt.Sprintf("%s: %s", scriptType, script),
+						Campaign:    "Shai-Hulud-v2",
 					})
 				}
 			}
@@ -767,6 +1135,9 @@ func (s *DiskScanner) printResults() {
 			}
 			fmt.Printf("%s[%s]%s %s\n", severityColor, f.Severity, colorReset, f.Description)
 			fmt.Printf("  %s📁 Path:%s %s\n", colorCyan, colorReset, f.Path)
+			if f.Campaign != "" {
+				fmt.Printf("  %s🎯 Campaign:%s %s\n", colorCyan, colorReset, f.Campaign)
+			}
 			if f.Details != "" {
 				fmt.Printf("  %s📝 Details:%s %s\n", colorCyan, colorReset, f.Details)
 			}
@@ -789,7 +1160,43 @@ func (s *DiskScanner) printRemediationSteps() {
 	fmt.Println("2. 🔍 Check for self-hosted GitHub runners named 'SHA1HULUD'")
 	fmt.Println("3. 📦 Clean and reinstall packages with --ignore-scripts")
 	fmt.Println()
+
+	// Print user identity information for incident reporting
+	s.printUserIdentity()
+
 	s.printPreventionTips()
+}
+
+// printUserIdentity prints user/host information for incident reporting
+func (s *DiskScanner) printUserIdentity() {
+	fmt.Printf("\n%s%s╔══════════════════════════════════════════════════════════════════╗%s\n", colorBold, colorPurple, colorReset)
+	fmt.Printf("%s%s║  📋 INCLUDE THIS IN YOUR INFOSEC TICKET                           ║%s\n", colorBold, colorPurple, colorReset)
+	fmt.Printf("%s%s╚══════════════════════════════════════════════════════════════════╝%s\n", colorBold, colorPurple, colorReset)
+	fmt.Println()
+
+	// Get username
+	username := os.Getenv("USER")
+	if username == "" {
+		username = os.Getenv("USERNAME") // Windows
+	}
+	if username == "" {
+		username = "unknown"
+	}
+
+	// Get hostname
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown"
+	}
+
+	// Get timestamp
+	timestamp := time.Now().Unix()
+
+	fmt.Printf("  %s- Username:%s %s\n", colorCyan, colorReset, username)
+	fmt.Printf("  %s- Hostname:%s %s\n", colorCyan, colorReset, hostname)
+	fmt.Printf("  %s- Timestamp:%s %d\n", colorCyan, colorReset, timestamp)
+	fmt.Printf("  %s- Scan Time:%s %s\n", colorCyan, colorReset, time.Now().Format(time.RFC3339))
+	fmt.Println()
 }
 
 func (s *DiskScanner) printPreventionTips() {
