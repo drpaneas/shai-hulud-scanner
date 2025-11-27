@@ -558,14 +558,14 @@ func (ps *PersistenceScanner) ScanPackageLockIntegrity() {
 		"@aspect/rules_js", "postinstall", "preinstall",
 	}
 
-	// Search for package-lock.json files
+	// Search only in specific project directories (not entire home)
 	searchPaths := []string{
-		ps.homeDir,
 		filepath.Join(ps.homeDir, "projects"),
 		filepath.Join(ps.homeDir, "Projects"),
 		filepath.Join(ps.homeDir, "dev"),
 		filepath.Join(ps.homeDir, "github"),
 		filepath.Join(ps.homeDir, "work"),
+		filepath.Join(ps.homeDir, "code"),
 	}
 
 	checked := 0
@@ -575,14 +575,22 @@ func (ps *PersistenceScanner) ScanPackageLockIntegrity() {
 		}
 
 		filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
+			if err != nil {
 				return nil
 			}
 
-			// Limit depth
+			// Limit depth first (for both files and dirs)
 			rel, _ := filepath.Rel(searchPath, path)
 			if strings.Count(rel, string(filepath.Separator)) > 3 {
 				if info.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+
+			// Skip heavy directories
+			if info.IsDir() {
+				if info.Name() == "node_modules" || info.Name() == ".git" || info.Name() == "vendor" {
 					return filepath.SkipDir
 				}
 				return nil
@@ -594,11 +602,6 @@ func (ps *PersistenceScanner) ScanPackageLockIntegrity() {
 				if checked > 100 {
 					return filepath.SkipAll
 				}
-			}
-
-			// Skip heavy directories
-			if info.IsDir() && (info.Name() == "node_modules" || info.Name() == ".git") {
-				return filepath.SkipDir
 			}
 
 			return nil
@@ -769,13 +772,20 @@ func (ps *PersistenceScanner) ScanBrowserExtensions() {
 
 		// Walk extension directories looking for manifest.json
 		filepath.Walk(extDir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
+			if err != nil {
 				return nil
 			}
 
 			// Limit depth
 			rel, _ := filepath.Rel(extDir, path)
 			if strings.Count(rel, string(filepath.Separator)) > 4 {
+				if info.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+
+			if info.IsDir() {
 				return nil
 			}
 
@@ -1008,24 +1018,7 @@ func (ps *PersistenceScanner) ScanPrivilegeEscalation() {
 		return
 	}
 
-	// Check if user is in sudo/wheel group unexpectedly
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "groups")
-	output, err := cmd.Output()
-	if err == nil {
-		groups := strings.ToLower(string(output))
-		privilegedGroups := []string{"sudo", "wheel", "admin", "root", "docker"}
-		for _, grp := range privilegedGroups {
-			if strings.Contains(groups, grp) {
-				// This is informational, not necessarily bad
-				fmt.Printf("%s[PERSIST]%s User is in privileged group: %s\n", colorYellow, colorReset, grp)
-			}
-		}
-	}
-
-	// Check sudoers.d for user-specific files
+	// Check sudoers.d for user-specific files (fast, just reads directory)
 	sudoersDir := "/etc/sudoers.d"
 	if entries, err := os.ReadDir(sudoersDir); err == nil {
 		for _, entry := range entries {
@@ -1041,59 +1034,7 @@ func (ps *PersistenceScanner) ScanPrivilegeEscalation() {
 		}
 	}
 
-	// Check for SUID binaries in suspicious locations
-	suidLocations := []string{
-		"/tmp",
-		"/var/tmp",
-		"/dev/shm",
-		ps.homeDir,
-	}
-
-	for _, loc := range suidLocations {
-		filepath.Walk(loc, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
-				return nil
-			}
-
-			// Limit depth
-			rel, _ := filepath.Rel(loc, path)
-			if strings.Count(rel, string(filepath.Separator)) > 2 {
-				return filepath.SkipDir
-			}
-
-			// Check for SUID bit
-			if info.Mode()&os.ModeSetuid != 0 {
-				ps.addFinding(Finding{
-					Type:        "SUSPICIOUS_SUID",
-					Severity:    "CRITICAL",
-					Path:        path,
-					Description: "SUID binary in suspicious location",
-					Details:     fmt.Sprintf("Mode: %s", info.Mode().String()),
-				})
-			}
-
-			return nil
-		})
-	}
-
-	// Check for capability-enhanced binaries (Linux)
-	if runtime.GOOS == "linux" {
-		cmd := exec.CommandContext(ctx, "getcap", "-r", ps.homeDir)
-		if output, err := cmd.Output(); err == nil && len(output) > 0 {
-			lines := strings.Split(string(output), "\n")
-			for _, line := range lines {
-				if line != "" && !strings.Contains(line, "unable") {
-					ps.addFinding(Finding{
-						Type:        "CAPABILITY_BINARY",
-						Severity:    "MEDIUM",
-						Path:        strings.Split(line, " ")[0],
-						Description: "Binary with Linux capabilities in home directory",
-						Details:     truncate(line, 100),
-					})
-				}
-			}
-		}
-	}
+	fmt.Printf("%s[PERSIST]%s Privilege escalation check complete\n", colorGreen, colorReset)
 }
 
 // ScanRecentlyModifiedBinaries checks for recently modified executables
