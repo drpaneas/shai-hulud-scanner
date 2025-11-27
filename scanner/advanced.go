@@ -65,6 +65,30 @@ var (
 		[]byte("discussion.body"),                    // Injection point
 		[]byte("Add Discusion"),                      // Typo from malware (intentional marker)
 		[]byte("actions/runners/registration-token"), // Runner registration
+
+		// Token recycling patterns (searches other Shai-Hulud repos for tokens)
+		[]byte("recycleToken"),
+		[]byte("findShaiHuludRepos"),
+		[]byte("extractTokenFromRepo"),
+
+		// Azure DevOps exploitation
+		[]byte("AGENT_BUILDDIRECTORY"),
+		[]byte("SYSTEM_TEAMFOUNDATIONCOLLECTIONURI"),
+		[]byte("AZURE_DEVOPS_EXT_PAT"),
+
+		// Docker privilege escalation
+		[]byte("docker run --privileged"),
+		[]byte("--net=host"),
+		[]byte("-v /:/host"),
+
+		// Network security bypass
+		[]byte("systemctl stop systemd-resolved"),
+		[]byte("iptables -F"),
+		[]byte("iptables --flush"),
+
+		// Worm propagation
+		[]byte("npm publish --access public"),
+		[]byte("npm version patch"),
 	}
 
 	// Obfuscation patterns (common in the 10MB bun_environment.js)

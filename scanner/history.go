@@ -19,6 +19,7 @@ type HistoryScanner struct {
 }
 
 var suspiciousPatterns = []*regexp.Regexp{
+	// Shai-Hulud specific patterns
 	regexp.MustCompile(`curl.*bun\.sh/install`),
 	regexp.MustCompile(`irm\s+bun\.sh`),
 	regexp.MustCompile(`wget.*bun\.sh`),
@@ -28,8 +29,28 @@ var suspiciousPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`SHA1HULUD`),
 	regexp.MustCompile(`bun_environment\.js`),
 	regexp.MustCompile(`setup_bun\.js`),
-	regexp.MustCompile(`ghp_[a-zA-Z0-9]{36}`),
-	regexp.MustCompile(`gho_[a-zA-Z0-9]{36}`),
+	regexp.MustCompile(`\.truffler-cache`),
+
+	// GitHub token patterns (all types)
+	regexp.MustCompile(`ghp_[a-zA-Z0-9]{36}`), // Personal access token
+	regexp.MustCompile(`gho_[a-zA-Z0-9]{36}`), // OAuth token
+	regexp.MustCompile(`ghs_[a-zA-Z0-9]{36}`), // GitHub App token
+	regexp.MustCompile(`ghr_[a-zA-Z0-9]{36}`), // Refresh token
+
+	// Anti-forensics / secure deletion (malware's dead man switch)
+	regexp.MustCompile(`shred\s+-[a-z]*u`),   // Linux secure delete
+	regexp.MustCompile(`cipher\s+/W:`),       // Windows secure delete
+	regexp.MustCompile(`del\s+/F\s+/Q\s+/S`), // Windows force delete
+	regexp.MustCompile(`rm\s+-rf\s+~/`),      // Delete home directory
+	regexp.MustCompile(`rm\s+-rf\s+\$HOME`),  // Delete home directory
+
+	// Azure DevOps exploitation
+	regexp.MustCompile(`systemctl\s+stop\s+systemd-resolved`), // Network security bypass
+	regexp.MustCompile(`iptables\s+-F`),                       // Flush firewall rules
+
+	// Runner installation
+	regexp.MustCompile(`actions-runner.*config`),
+	regexp.MustCompile(`Runner\.Listener`),
 }
 
 // NewHistoryScanner creates a new history scanner
@@ -210,6 +231,106 @@ func (hs *HistoryScanner) ScanGitHubCLI() {
 	}
 }
 
+// ScanCIEnvironment checks if running in a CI/CD environment (malware target)
+func (hs *HistoryScanner) ScanCIEnvironment() {
+	fmt.Printf("%s[HIST]%s Checking CI/CD environment indicators...\n", colorCyan, colorReset)
+
+	// CI/CD environment variables the malware specifically checks for
+	ciEnvVars := []struct {
+		name    string
+		ciName  string
+	}{
+		{"GITHUB_ACTIONS", "GitHub Actions"},
+		{"BUILDKITE", "Buildkite"},
+		{"CIRCLE_SHA1", "CircleCI"},
+		{"GITLAB_CI", "GitLab CI"},
+		{"JENKINS_URL", "Jenkins"},
+		{"TRAVIS", "Travis CI"},
+		{"AZURE_PIPELINES", "Azure Pipelines"},
+		{"TF_BUILD", "Azure DevOps"},
+		{"AGENT_ID", "Azure DevOps Agent"},
+	}
+
+	for _, env := range ciEnvVars {
+		if val := os.Getenv(env.name); val != "" {
+			hs.addFinding(Finding{
+				Type:        "CI_ENVIRONMENT",
+				Severity:    "MEDIUM",
+				Path:        "environment",
+				Description: fmt.Sprintf("Running in %s CI/CD environment", env.ciName),
+				Details:     fmt.Sprintf("%s=%s - Shai-Hulud malware specifically targets CI environments", env.name, truncate(val, 50)),
+			})
+		}
+	}
+}
+
+// ScanGitRemotes checks for Shai-Hulud exfiltration repositories
+func (hs *HistoryScanner) ScanGitRemotes() {
+	fmt.Printf("%s[HIST]%s Checking git remotes for Shai-Hulud repos...\n", colorCyan, colorReset)
+
+	// Check current directory and common project locations
+	searchPaths := []string{
+		".",
+		filepath.Join(hs.homeDir, "projects"),
+		filepath.Join(hs.homeDir, "Projects"),
+		filepath.Join(hs.homeDir, "dev"),
+		filepath.Join(hs.homeDir, "github"),
+		filepath.Join(hs.homeDir, "work"),
+	}
+
+	maliciousRepoPatterns := []string{
+		"Sha1-Hulud",
+		"SHA1HULUD",
+		"shai-hulud",
+		"Shai-Hulud",
+		"The-Second-Coming",
+	}
+
+	for _, searchPath := range searchPaths {
+		filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil
+			}
+
+			// Limit depth
+			rel, _ := filepath.Rel(searchPath, path)
+			if strings.Count(rel, string(filepath.Separator)) > 3 {
+				if info.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+
+			if info.IsDir() && info.Name() == ".git" {
+				configPath := filepath.Join(path, "config")
+				content, err := os.ReadFile(configPath)
+				if err != nil {
+					return filepath.SkipDir
+				}
+
+				for _, pattern := range maliciousRepoPatterns {
+					if bytes.Contains(content, []byte(pattern)) {
+						hs.addFinding(Finding{
+							Type:        "MALICIOUS_REMOTE",
+							Severity:    "CRITICAL",
+							Path:        configPath,
+							Description: fmt.Sprintf("Git repository with Shai-Hulud remote pattern: %s", pattern),
+							Details:     "This may be an exfiltration repository created by the malware",
+						})
+					}
+				}
+				return filepath.SkipDir
+			}
+
+			if info.IsDir() && (info.Name() == "node_modules" || info.Name() == "vendor") {
+				return filepath.SkipDir
+			}
+
+			return nil
+		})
+	}
+}
+
 // Run performs all history-based checks
 func (hs *HistoryScanner) Run() []Finding {
 	fmt.Printf("\n%s%s╔══════════════════════════════════════════════════════════════════╗%s\n", colorBold, colorPurple, colorReset)
@@ -218,12 +339,14 @@ func (hs *HistoryScanner) Run() []Finding {
 	fmt.Printf("%s%s╚══════════════════════════════════════════════════════════════════╝%s\n", colorBold, colorPurple, colorReset)
 
 	var wg sync.WaitGroup
-	wg.Add(5)
+	wg.Add(7)
 	go func() { defer wg.Done(); hs.ScanShellHistory() }()
 	go func() { defer wg.Done(); hs.ScanGitCredentials() }()
 	go func() { defer wg.Done(); hs.ScanNpmrc() }()
 	go func() { defer wg.Done(); hs.ScanCloudCredentials() }()
 	go func() { defer wg.Done(); hs.ScanGitHubCLI() }()
+	go func() { defer wg.Done(); hs.ScanCIEnvironment() }()
+	go func() { defer wg.Done(); hs.ScanGitRemotes() }()
 	wg.Wait()
 
 	if len(hs.findings) > 0 {
