@@ -896,19 +896,20 @@ func (s *DiskScanner) checkWorkflowForShaiHulud(path string) {
 	n, _ := file.Read(*bufPtr)
 	content := (*bufPtr)[:n]
 
-	// Only flag if we find Shai-Hulud specific patterns
-	shaiHuludPatterns := [][]byte{
-		sha1HuludPattern,
-		sha1HuludPattern2,
-		[]byte("The Second Coming"),
-		[]byte("The Continued Coming"),
-		[]byte("bun_environment"),
-		[]byte("setup_bun"),
-		[]byte("trufflehog"),
-		[]byte(".truffler-cache"),
+	// HIGH-CONFIDENCE patterns - these alone indicate malware
+	// These are unique to Shai-Hulud and unlikely to appear in legitimate code
+	highConfidencePatterns := [][]byte{
+		sha1HuludPattern,                // SHA1HULUD
+		sha1HuludPattern2,               // Sha1-Hulud
+		[]byte("The Second Coming"),     // Campaign name
+		[]byte("The Continued Coming"),  // Campaign name variant
+		[]byte(".truffler-cache"),       // Malware-specific cache directory
+		[]byte("downloadAndSetupBun"),   // Malware function name
+		[]byte("bun_environment.js"),    // Full malware filename
+		[]byte("setup_bun.js"),          // Full malware filename
 	}
 
-	for _, pattern := range shaiHuludPatterns {
+	for _, pattern := range highConfidencePatterns {
 		if bytes.Contains(content, pattern) {
 			s.addFinding(Finding{
 				Type:        "BACKDOOR_WORKFLOW",
@@ -922,14 +923,62 @@ func (s *DiskScanner) checkWorkflowForShaiHulud(path string) {
 		}
 	}
 
-	// Check for suspicious self-hosted + discussion combination
-	if bytes.Contains(content, selfHostedPattern) && bytes.Contains(content, discussionBody) {
+	// MEDIUM-CONFIDENCE patterns - require MULTIPLE indicators
+	// These can appear in legitimate code (trufflehog is a valid security tool)
+	mediumConfidencePatterns := [][]byte{
+		[]byte("trufflehog"),    // Legitimate secret scanning tool, but also used by malware
+		[]byte("bun_environment"), // Could be legitimate bun config
+		[]byte("setup_bun"),     // Could be legitimate bun setup
+	}
+
+	// Count how many medium-confidence patterns match
+	matchCount := 0
+	var matchedPatterns []string
+	for _, pattern := range mediumConfidencePatterns {
+		if bytes.Contains(content, pattern) {
+			matchCount++
+			matchedPatterns = append(matchedPatterns, string(pattern))
+		}
+	}
+
+	// Also check for attack-vector indicators
+	hasSelfHosted := bytes.Contains(content, selfHostedPattern)
+	hasDiscussionTrigger := bytes.Contains(content, discussionBody) || bytes.Contains(content, discussionPattern)
+
+	// Only flag if we have multiple medium-confidence patterns
+	// OR a medium-confidence pattern combined with attack-vector indicators
+	if matchCount >= 2 {
 		s.addFinding(Finding{
 			Type:        "SUSPICIOUS_WORKFLOW",
 			Severity:    "HIGH",
 			Path:        path,
-			Description: "GitHub workflow with self-hosted runner and discussion injection",
-			Details:     "This pattern matches the Shai-Hulud attack vector",
+			Description: "GitHub workflow contains multiple suspicious patterns",
+			Details:     fmt.Sprintf("Found: %s", strings.Join(matchedPatterns, ", ")),
+			Campaign:    "Shai-Hulud-v2",
+		})
+		return
+	}
+
+	if matchCount >= 1 && hasSelfHosted && hasDiscussionTrigger {
+		s.addFinding(Finding{
+			Type:        "SUSPICIOUS_WORKFLOW",
+			Severity:    "HIGH",
+			Path:        path,
+			Description: "GitHub workflow with suspicious pattern + attack vector indicators",
+			Details:     fmt.Sprintf("Found: %s (with self-hosted runner and discussion trigger)", strings.Join(matchedPatterns, ", ")),
+			Campaign:    "Shai-Hulud-v2",
+		})
+		return
+	}
+
+	// Check for the classic attack vector combination (even without other patterns)
+	if hasSelfHosted && hasDiscussionTrigger {
+		s.addFinding(Finding{
+			Type:        "SUSPICIOUS_WORKFLOW",
+			Severity:    "MEDIUM",
+			Path:        path,
+			Description: "GitHub workflow with self-hosted runner and discussion trigger",
+			Details:     "This pattern matches the Shai-Hulud attack vector. Verify this is intentional.",
 			Campaign:    "Shai-Hulud-v2",
 		})
 	}

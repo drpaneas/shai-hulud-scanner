@@ -18,45 +18,62 @@ type HistoryScanner struct {
 	homeDir       string
 }
 
-var suspiciousPatterns = []*regexp.Regexp{
-	// Shai-Hulud specific patterns
-	regexp.MustCompile(`curl.*bun\.sh/install`),
-	regexp.MustCompile(`irm\s+bun\.sh`),
-	regexp.MustCompile(`wget.*bun\.sh`),
-	regexp.MustCompile(`curl.*trufflehog`),
-	regexp.MustCompile(`npm\s+publish`),
-	regexp.MustCompile(`Sha1-Hulud`),
-	regexp.MustCompile(`SHA1HULUD`),
-	regexp.MustCompile(`bun_environment\.js`),
-	regexp.MustCompile(`setup_bun\.js`),
-	regexp.MustCompile(`\.truffler-cache`),
+// HistoryPattern represents a pattern to search for with metadata
+type HistoryPattern struct {
+	Pattern     *regexp.Regexp
+	Description string
+	Severity    string // "CRITICAL", "HIGH", "MEDIUM", "INFO"
+	IsInfoOnly  bool   // If true, pattern might be from research/reading, not actual infection
+}
 
-	// GitHub token patterns (all types)
-	regexp.MustCompile(`ghp_[a-zA-Z0-9]{36}`), // Personal access token
-	regexp.MustCompile(`gho_[a-zA-Z0-9]{36}`), // OAuth token
-	regexp.MustCompile(`ghs_[a-zA-Z0-9]{36}`), // GitHub App token
-	regexp.MustCompile(`ghr_[a-zA-Z0-9]{36}`), // Refresh token
+var suspiciousHistoryPatterns = []HistoryPattern{
+	// HIGH-CONFIDENCE: Actual malware execution commands
+	{regexp.MustCompile(`(?i)node\s+.*setup_bun\.js`), "Executing setup_bun.js malware loader", "CRITICAL", false},
+	{regexp.MustCompile(`(?i)node\s+.*bun_environment\.js`), "Executing bun_environment.js malware", "CRITICAL", false},
+	{regexp.MustCompile(`(?i)bun\s+run\s+.*setup_bun`), "Running setup_bun with bun", "CRITICAL", false},
+	{regexp.MustCompile(`curl.*bun\.sh/install.*\|\s*(ba)?sh`), "Piping bun installer to shell", "CRITICAL", false},
+	{regexp.MustCompile(`irm\s+bun\.sh.*\|\s*iex`), "PowerShell bun installer execution", "CRITICAL", false},
+	{regexp.MustCompile(`wget.*bun\.sh/install.*\|\s*(ba)?sh`), "Piping bun installer to shell", "CRITICAL", false},
 
-	// GitLab token patterns
-	regexp.MustCompile(`glpat-[a-zA-Z0-9_-]{20}`), // Personal access token
-	regexp.MustCompile(`glcbt-[a-zA-Z0-9_-]{20}`), // CI/CD job token
-	regexp.MustCompile(`glrt-[a-zA-Z0-9_-]{20}`),  // Runner registration token
-	regexp.MustCompile(`gldt-[a-zA-Z0-9_-]{20}`),  // Deploy token
+	// HIGH-CONFIDENCE: Malware identifiers
+	{regexp.MustCompile(`SHA1HULUD`), "Shai-Hulud malware identifier", "CRITICAL", false},
+	{regexp.MustCompile(`Sha1-Hulud`), "Shai-Hulud malware identifier", "CRITICAL", false},
+	{regexp.MustCompile(`The Second Coming`), "Shai-Hulud campaign name", "CRITICAL", false},
+	{regexp.MustCompile(`\.truffler-cache`), "Malware cache directory reference", "HIGH", false},
 
-	// Anti-forensics / secure deletion (malware's dead man switch)
-	regexp.MustCompile(`shred\s+-[a-z]*u`),   // Linux secure delete
-	regexp.MustCompile(`cipher\s+/W:`),       // Windows secure delete
-	regexp.MustCompile(`del\s+/F\s+/Q\s+/S`), // Windows force delete
-	regexp.MustCompile(`rm\s+-rf\s+~/`),      // Delete home directory
-	regexp.MustCompile(`rm\s+-rf\s+\$HOME`),  // Delete home directory
+	// MEDIUM-CONFIDENCE: Could be malware or research
+	// These are downgraded because security researchers might have these in history
+	{regexp.MustCompile(`curl.*trufflehog.*releases`), "Downloading trufflehog binary", "MEDIUM", true},
+	{regexp.MustCompile(`npm\s+publish\s+--access\s+public`), "Public npm publish (worm propagation pattern)", "MEDIUM", true},
 
-	// Azure DevOps exploitation
-	regexp.MustCompile(`systemctl\s+stop\s+systemd-resolved`), // Network security bypass
-	regexp.MustCompile(`iptables\s+-F`),                       // Flush firewall rules
+	// INFO-ONLY: Filename references (likely from research, not execution)
+	// Only report if user explicitly wants verbose output
+	// {regexp.MustCompile(`bun_environment\.js`), "Reference to bun_environment.js", "INFO", true},
+	// {regexp.MustCompile(`setup_bun\.js`), "Reference to setup_bun.js", "INFO", true},
 
-	// Runner installation
-	regexp.MustCompile(`actions-runner.*config`),
-	regexp.MustCompile(`Runner\.Listener`),
+	// Exposed credentials in history (always flag these)
+	{regexp.MustCompile(`ghp_[a-zA-Z0-9]{36}`), "GitHub Personal Access Token in history", "CRITICAL", false},
+	{regexp.MustCompile(`gho_[a-zA-Z0-9]{36}`), "GitHub OAuth Token in history", "CRITICAL", false},
+	{regexp.MustCompile(`ghs_[a-zA-Z0-9]{36}`), "GitHub App Token in history", "CRITICAL", false},
+	{regexp.MustCompile(`ghr_[a-zA-Z0-9]{36}`), "GitHub Refresh Token in history", "CRITICAL", false},
+	{regexp.MustCompile(`glpat-[a-zA-Z0-9_-]{20}`), "GitLab Personal Access Token in history", "CRITICAL", false},
+	{regexp.MustCompile(`glcbt-[a-zA-Z0-9_-]{20}`), "GitLab CI/CD Job Token in history", "CRITICAL", false},
+	{regexp.MustCompile(`glrt-[a-zA-Z0-9_-]{20}`), "GitLab Runner Token in history", "CRITICAL", false},
+	{regexp.MustCompile(`gldt-[a-zA-Z0-9_-]{20}`), "GitLab Deploy Token in history", "CRITICAL", false},
+
+	// Anti-forensics / destructive commands (always flag)
+	{regexp.MustCompile(`shred\s+-[a-z]*u`), "Secure file deletion command", "HIGH", false},
+	{regexp.MustCompile(`cipher\s+/W:`), "Windows secure deletion command", "HIGH", false},
+	{regexp.MustCompile(`del\s+/F\s+/Q\s+/S`), "Windows force recursive delete", "HIGH", false},
+	{regexp.MustCompile(`rm\s+-rf\s+~/`), "Recursive delete of home directory", "CRITICAL", false},
+	{regexp.MustCompile(`rm\s+-rf\s+\$HOME`), "Recursive delete of home directory", "CRITICAL", false},
+
+	// System compromise indicators
+	{regexp.MustCompile(`systemctl\s+stop\s+systemd-resolved`), "Disabling DNS resolver", "HIGH", false},
+	{regexp.MustCompile(`iptables\s+-F`), "Flushing firewall rules", "HIGH", false},
+
+	// Runner installation (context-dependent)
+	{regexp.MustCompile(`actions-runner.*config.*--url.*--token`), "GitHub Actions runner configuration", "MEDIUM", true},
 }
 
 // NewHistoryScanner creates a new history scanner
@@ -112,15 +129,31 @@ func (hs *HistoryScanner) scanHistoryFile(path string) {
 		lineNum++
 		line := scanner.Text()
 
-		for _, pattern := range suspiciousPatterns {
-			if pattern.MatchString(line) {
+		for _, hp := range suspiciousHistoryPatterns {
+			if hp.Pattern.MatchString(line) {
+				// Skip INFO-only patterns (likely from research)
+				if hp.IsInfoOnly && hp.Severity == "INFO" {
+					continue
+				}
+
+				findingType := "SUSPICIOUS_COMMAND"
+				if hp.Severity == "CRITICAL" {
+					findingType = "MALWARE_EXECUTION"
+				}
+
+				details := fmt.Sprintf("Command: %s", truncate(line, 100))
+				if hp.IsInfoOnly {
+					details += " (Note: Could be from security research)"
+				}
+
 				hs.addFinding(Finding{
-					Type:        "SUSPICIOUS_COMMAND",
-					Severity:    "HIGH",
+					Type:        findingType,
+					Severity:    hp.Severity,
 					Path:        path,
-					Description: fmt.Sprintf("Suspicious command in shell history (line %d)", lineNum),
-					Details:     fmt.Sprintf("Pattern: %s, Command: %s", pattern.String(), truncate(line, 100)),
+					Description: fmt.Sprintf("%s (line %d)", hp.Description, lineNum),
+					Details:     details,
 				})
+				break // Only report first matching pattern per line
 			}
 		}
 	}
