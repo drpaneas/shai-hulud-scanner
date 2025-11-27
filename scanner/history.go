@@ -213,7 +213,8 @@ func (hs *HistoryScanner) ScanGitHubCLI() {
 // Run performs all history-based checks
 func (hs *HistoryScanner) Run() []Finding {
 	fmt.Printf("\n%s%s╔══════════════════════════════════════════════════════════════════╗%s\n", colorBold, colorPurple, colorReset)
-	fmt.Printf("%s%s║  📜 SHELL HISTORY & CREDENTIALS ANALYSIS                          ║%s\n", colorBold, colorPurple, colorReset)
+	fmt.Printf("%s%s║  🐛 SHAI-HULUD v2 HISTORY SCANNER                                 ║%s\n", colorBold, colorPurple, colorReset)
+	fmt.Printf("%s%s║  Checking shell history and credentials for malware activity      ║%s\n", colorBold, colorPurple, colorReset)
 	fmt.Printf("%s%s╚══════════════════════════════════════════════════════════════════╝%s\n", colorBold, colorPurple, colorReset)
 
 	var wg sync.WaitGroup

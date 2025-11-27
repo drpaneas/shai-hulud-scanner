@@ -602,8 +602,8 @@ func (as *AdvancedScanner) ScanProcesses() {
 // Run performs all advanced scans
 func (as *AdvancedScanner) Run(rootPath string) []Finding {
 	fmt.Printf("\n%s%s╔══════════════════════════════════════════════════════════════════╗%s\n", colorBold, colorPurple, colorReset)
-	fmt.Printf("%s%s║  🔬 ADVANCED MALWARE ANALYSIS                                     ║%s\n", colorBold, colorPurple, colorReset)
-	fmt.Printf("%s%s║  Deep scan for Shai-Hulud v2 indicators                           ║%s\n", colorBold, colorPurple, colorReset)
+	fmt.Printf("%s%s║  🐛 SHAI-HULUD v2 ADVANCED SCANNER                                ║%s\n", colorBold, colorPurple, colorReset)
+	fmt.Printf("%s%s║  Deep scan: obfuscation, runners, workflows, exfiltration         ║%s\n", colorBold, colorPurple, colorReset)
 	fmt.Printf("%s%s╚══════════════════════════════════════════════════════════════════╝%s\n", colorBold, colorPurple, colorReset)
 
 	var wg sync.WaitGroup

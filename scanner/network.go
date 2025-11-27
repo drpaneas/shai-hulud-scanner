@@ -212,7 +212,8 @@ func (ns *NetworkScanner) PrintNetworkFindings() {
 // Run performs all network checks
 func (ns *NetworkScanner) Run() []NetworkFinding {
 	fmt.Printf("\n%s%s╔══════════════════════════════════════════════════════════════════╗%s\n", colorBold, colorPurple, colorReset)
-	fmt.Printf("%s%s║  🌐 NETWORK TRAFFIC ANALYSIS                                      ║%s\n", colorBold, colorPurple, colorReset)
+	fmt.Printf("%s%s║  🐛 SHAI-HULUD v2 NETWORK SCANNER                                 ║%s\n", colorBold, colorPurple, colorReset)
+	fmt.Printf("%s%s║  Checking for malware network activity (bun.sh, github.com)       ║%s\n", colorBold, colorPurple, colorReset)
 	fmt.Printf("%s%s╚══════════════════════════════════════════════════════════════════╝%s\n", colorBold, colorPurple, colorReset)
 
 	ifaces := ns.ScanNetworkInterfaces()
