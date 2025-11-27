@@ -899,14 +899,14 @@ func (s *DiskScanner) checkWorkflowForShaiHulud(path string) {
 	// HIGH-CONFIDENCE patterns - these alone indicate malware
 	// These are unique to Shai-Hulud and unlikely to appear in legitimate code
 	highConfidencePatterns := [][]byte{
-		sha1HuludPattern,                // SHA1HULUD
-		sha1HuludPattern2,               // Sha1-Hulud
-		[]byte("The Second Coming"),     // Campaign name
-		[]byte("The Continued Coming"),  // Campaign name variant
-		[]byte(".truffler-cache"),       // Malware-specific cache directory
-		[]byte("downloadAndSetupBun"),   // Malware function name
-		[]byte("bun_environment.js"),    // Full malware filename
-		[]byte("setup_bun.js"),          // Full malware filename
+		sha1HuludPattern,               // SHA1HULUD
+		sha1HuludPattern2,              // Sha1-Hulud
+		[]byte("The Second Coming"),    // Campaign name
+		[]byte("The Continued Coming"), // Campaign name variant
+		[]byte(".truffler-cache"),      // Malware-specific cache directory
+		[]byte("downloadAndSetupBun"),  // Malware function name
+		[]byte("bun_environment.js"),   // Full malware filename
+		[]byte("setup_bun.js"),         // Full malware filename
 	}
 
 	for _, pattern := range highConfidencePatterns {
@@ -926,9 +926,9 @@ func (s *DiskScanner) checkWorkflowForShaiHulud(path string) {
 	// MEDIUM-CONFIDENCE patterns - require MULTIPLE indicators
 	// These can appear in legitimate code (trufflehog is a valid security tool)
 	mediumConfidencePatterns := [][]byte{
-		[]byte("trufflehog"),    // Legitimate secret scanning tool, but also used by malware
+		[]byte("trufflehog"),      // Legitimate secret scanning tool, but also used by malware
 		[]byte("bun_environment"), // Could be legitimate bun config
-		[]byte("setup_bun"),     // Could be legitimate bun setup
+		[]byte("setup_bun"),       // Could be legitimate bun setup
 	}
 
 	// Count how many medium-confidence patterns match
