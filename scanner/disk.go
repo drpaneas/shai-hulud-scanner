@@ -327,6 +327,11 @@ func (s *DiskScanner) processFile(path string) {
 		s.checkSetupBunFile(path)
 		return
 
+	case "verify.js":
+		// Another variant of malware loader
+		s.checkVerifyJSFile(path)
+		return
+
 	case "trufflehog", "trufflehog.exe":
 		if strings.Contains(path, ".truffler-cache") {
 			s.addFinding(Finding{
@@ -347,23 +352,28 @@ func (s *DiskScanner) processFile(path string) {
 		}
 		return
 
-	case "discussion.yaml":
+	case "discussion.yaml", "shaihuludworkflow.yml", "shai-hulud-workflow.yml":
 		if strings.Contains(path, ".github"+string(filepath.Separator)+"workflows") {
-			s.checkDiscussionYaml(path)
+			s.checkMaliciousWorkflow(path, name)
 		}
 		return
 
 	case "cloud.json", "contents.json", "environment.json", "truffleSecrets.json":
-		if strings.Contains(path, "node_modules") || strings.Contains(path, ".github") {
-			s.addFinding(Finding{
-				Type:        "EXFILTRATION_DATA",
-				Severity:    "HIGH",
-				Path:        path,
-				Description: fmt.Sprintf("Found %s - Potential exfiltrated credential data", name),
-				Details:     "May contain stolen credentials.",
-			})
-		}
+		// These exfiltration files can appear anywhere
+		s.addFinding(Finding{
+			Type:        "EXFILTRATION_DATA",
+			Severity:    "CRITICAL",
+			Path:        path,
+			Description: fmt.Sprintf("Found %s - Shai-Hulud exfiltration data file", name),
+			Details:     "Contains stolen credentials harvested by the malware.",
+		})
 		return
+	}
+
+	// Check any .yaml/.yml file in .github/workflows for Shai-Hulud patterns
+	if (strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml")) &&
+		strings.Contains(path, ".github"+string(filepath.Separator)+"workflows") {
+		s.checkWorkflowForShaiHulud(path)
 	}
 }
 
@@ -405,7 +415,45 @@ func (s *DiskScanner) checkSetupBunFile(path string) {
 	}
 }
 
-func (s *DiskScanner) checkDiscussionYaml(path string) {
+func (s *DiskScanner) checkVerifyJSFile(path string) {
+	bufPtr := s.bufferPool.Get().(*[]byte)
+	defer s.bufferPool.Put(bufPtr)
+
+	file, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	n, _ := file.Read(*bufPtr)
+	content := (*bufPtr)[:n]
+
+	// Check for Shai-Hulud specific patterns in verify.js
+	malwarePatterns := [][]byte{
+		[]byte("bun_environment"),
+		[]byte("setup_bun"),
+		[]byte("trufflehog"),
+		[]byte("bun.sh"),
+		[]byte("downloadAndSetupBun"),
+		[]byte("SHA1HULUD"),
+		[]byte("Sha1-Hulud"),
+	}
+
+	for _, pattern := range malwarePatterns {
+		if bytes.Contains(content, pattern) {
+			s.addFinding(Finding{
+				Type:        "MALICIOUS_FILE",
+				Severity:    "CRITICAL",
+				Path:        path,
+				Description: "Found verify.js with Shai-Hulud malware patterns",
+				Details:     fmt.Sprintf("Contains: %s", string(pattern)),
+			})
+			return
+		}
+	}
+}
+
+func (s *DiskScanner) checkMaliciousWorkflow(path string, name string) {
 	bufPtr := s.bufferPool.Get().(*[]byte)
 	defer s.bufferPool.Put(bufPtr)
 
@@ -419,23 +467,89 @@ func (s *DiskScanner) checkDiscussionYaml(path string) {
 	content := (*bufPtr)[:n]
 
 	var details []string
-	if bytes.Contains(content, selfHostedPattern) && bytes.Contains(content, discussionPattern) {
-		details = append(details, "Uses self-hosted runner with discussion trigger")
+
+	// Check for self-hosted runner (backdoor indicator)
+	if bytes.Contains(content, selfHostedPattern) {
+		details = append(details, "Uses self-hosted runner")
 	}
+
+	// Check for discussion trigger (injection vector)
+	if bytes.Contains(content, discussionPattern) {
+		details = append(details, "Triggered by discussions")
+	}
+
+	// Check for command injection via discussion body
 	if bytes.Contains(content, discussionBody) {
-		details = append(details, "Contains command injection vulnerability")
+		details = append(details, "Contains command injection via discussion.body")
 	}
+
+	// Check for Shai-Hulud identifiers
 	if bytes.Contains(content, sha1HuludPattern) || bytes.Contains(content, sha1HuludPattern2) {
 		details = append(details, "Contains Shai-Hulud identifier")
 	}
 
-	if len(details) > 0 {
+	// Check for "The Second Coming" or "The Continued Coming"
+	if bytes.Contains(content, []byte("The Second Coming")) || bytes.Contains(content, []byte("The Continued Coming")) {
+		details = append(details, "Contains Shai-Hulud campaign marker")
+	}
+
+	if len(details) > 0 || name == "shaihuludworkflow.yml" || name == "shai-hulud-workflow.yml" {
 		s.addFinding(Finding{
 			Type:        "BACKDOOR_WORKFLOW",
 			Severity:    "CRITICAL",
 			Path:        path,
-			Description: "Found malicious discussion.yaml GitHub workflow backdoor",
+			Description: fmt.Sprintf("Found malicious %s GitHub workflow backdoor", name),
 			Details:     strings.Join(details, "; "),
+		})
+	}
+}
+
+func (s *DiskScanner) checkWorkflowForShaiHulud(path string) {
+	bufPtr := s.bufferPool.Get().(*[]byte)
+	defer s.bufferPool.Put(bufPtr)
+
+	file, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	n, _ := file.Read(*bufPtr)
+	content := (*bufPtr)[:n]
+
+	// Only flag if we find Shai-Hulud specific patterns
+	shaiHuludPatterns := [][]byte{
+		sha1HuludPattern,
+		sha1HuludPattern2,
+		[]byte("The Second Coming"),
+		[]byte("The Continued Coming"),
+		[]byte("bun_environment"),
+		[]byte("setup_bun"),
+		[]byte("trufflehog"),
+		[]byte(".truffler-cache"),
+	}
+
+	for _, pattern := range shaiHuludPatterns {
+		if bytes.Contains(content, pattern) {
+			s.addFinding(Finding{
+				Type:        "BACKDOOR_WORKFLOW",
+				Severity:    "CRITICAL",
+				Path:        path,
+				Description: "GitHub workflow contains Shai-Hulud malware pattern",
+				Details:     fmt.Sprintf("Found: %s", string(pattern)),
+			})
+			return
+		}
+	}
+
+	// Check for suspicious self-hosted + discussion combination
+	if bytes.Contains(content, selfHostedPattern) && bytes.Contains(content, discussionBody) {
+		s.addFinding(Finding{
+			Type:        "SUSPICIOUS_WORKFLOW",
+			Severity:    "HIGH",
+			Path:        path,
+			Description: "GitHub workflow with self-hosted runner and discussion injection",
+			Details:     "This pattern matches the Shai-Hulud attack vector",
 		})
 	}
 }
@@ -453,26 +567,96 @@ func (s *DiskScanner) checkPackageJSON(path string) {
 	n, _ := file.Read(*bufPtr)
 	content := (*bufPtr)[:n]
 
-	if !bytes.Contains(content, setupBunJSPattern) && !bytes.Contains(content, bunEnvPattern) {
-		return
-	}
-
 	var pkg PackageJSON
 	if err := json.Unmarshal(content, &pkg); err != nil {
 		return
 	}
 
-	for _, scriptType := range []string{"preinstall", "postinstall", "install"} {
+	// Check install scripts for Shai-Hulud patterns
+	suspiciousScriptPatterns := []string{
+		"setup_bun.js",
+		"bun_environment",
+		"verify.js",
+		"bun run",
+		"bun.sh",
+		"trufflehog",
+	}
+
+	// More aggressive patterns that indicate malware loader
+	malwareLoaderPatterns := []string{
+		"curl",
+		"wget",
+		"| bash",
+		"| sh",
+		"eval",
+	}
+
+	for _, scriptType := range []string{"preinstall", "postinstall", "install", "prepare"} {
 		if script, ok := pkg.Scripts[scriptType]; ok {
-			if strings.Contains(script, "setup_bun.js") || strings.Contains(script, "bun_environment") {
-				s.addFinding(Finding{
-					Type:        "MALICIOUS_SCRIPT",
-					Severity:    "CRITICAL",
-					Path:        path,
-					Description: fmt.Sprintf("Package '%s' has malicious %s script", pkg.Name, scriptType),
-					Details:     fmt.Sprintf("%s script: %s", scriptType, script),
-				})
+			// Check for direct Shai-Hulud indicators
+			for _, pattern := range suspiciousScriptPatterns {
+				if strings.Contains(script, pattern) {
+					s.addFinding(Finding{
+						Type:        "MALICIOUS_SCRIPT",
+						Severity:    "CRITICAL",
+						Path:        path,
+						Description: fmt.Sprintf("Package '%s' has Shai-Hulud %s script", pkg.Name, scriptType),
+						Details:     fmt.Sprintf("%s: %s", scriptType, script),
+					})
+					return
+				}
 			}
+
+			// Check for suspicious loader patterns (might download malware)
+			for _, pattern := range malwareLoaderPatterns {
+				if strings.Contains(script, pattern) {
+					s.addFinding(Finding{
+						Type:        "SUSPICIOUS_SCRIPT",
+						Severity:    "HIGH",
+						Path:        path,
+						Description: fmt.Sprintf("Package '%s' has suspicious %s script with '%s'", pkg.Name, scriptType, pattern),
+						Details:     fmt.Sprintf("%s: %s", scriptType, script),
+					})
+					return
+				}
+			}
+		}
+	}
+
+	// Check if package has dependencies on known infected packages
+	s.checkDependenciesForInfected(path, content)
+}
+
+func (s *DiskScanner) checkDependenciesForInfected(path string, content []byte) {
+	// Parse dependencies
+	var pkgFull struct {
+		Name            string            `json:"name"`
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+	}
+
+	if err := json.Unmarshal(content, &pkgFull); err != nil {
+		return
+	}
+
+	// Check dependencies against IOC list
+	allDeps := make(map[string]string)
+	for k, v := range pkgFull.Dependencies {
+		allDeps[k] = v
+	}
+	for k, v := range pkgFull.DevDependencies {
+		allDeps[k] = v
+	}
+
+	for depName := range allDeps {
+		if _, infected := s.infectedPkgs[depName]; infected {
+			s.addFinding(Finding{
+				Type:        "INFECTED_DEPENDENCY",
+				Severity:    "HIGH",
+				Path:        path,
+				Description: fmt.Sprintf("Package '%s' depends on potentially infected package: %s", pkgFull.Name, depName),
+				Details:     "Run: npm ls " + depName + " to check installed version",
+			})
 		}
 	}
 }
