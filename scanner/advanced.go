@@ -34,6 +34,11 @@ var (
 	githubAppPattern   = regexp.MustCompile(`ghs_[a-zA-Z0-9]{36}`)
 	githubRefresh      = regexp.MustCompile(`ghr_[a-zA-Z0-9]{36}`)
 
+	// GitLab token patterns
+	gitlabPATPattern    = regexp.MustCompile(`glpat-[a-zA-Z0-9_-]{20}`)
+	gitlabCIPattern     = regexp.MustCompile(`glcbt-[a-zA-Z0-9_-]{20}`)
+	gitlabRunnerPattern = regexp.MustCompile(`glrt-[a-zA-Z0-9_-]{20}`)
+
 	// npm token pattern
 	npmTokenPattern = regexp.MustCompile(`npm_[a-zA-Z0-9]{36}`)
 
@@ -561,6 +566,10 @@ func (as *AdvancedScanner) checkEnvFileForSecrets(path string, content []byte) {
 		if githubPATPattern.MatchString(line) || githubOAuthPattern.MatchString(line) ||
 			githubAppPattern.MatchString(line) || githubRefresh.MatchString(line) {
 			exposedSecrets = append(exposedSecrets, fmt.Sprintf("GitHub token (line %d)", lineNum))
+		}
+		if gitlabPATPattern.MatchString(line) || gitlabCIPattern.MatchString(line) ||
+			gitlabRunnerPattern.MatchString(line) {
+			exposedSecrets = append(exposedSecrets, fmt.Sprintf("GitLab token (line %d)", lineNum))
 		}
 		if npmTokenPattern.MatchString(line) {
 			exposedSecrets = append(exposedSecrets, fmt.Sprintf("npm token (line %d)", lineNum))

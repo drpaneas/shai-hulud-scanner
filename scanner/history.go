@@ -37,6 +37,12 @@ var suspiciousPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`ghs_[a-zA-Z0-9]{36}`), // GitHub App token
 	regexp.MustCompile(`ghr_[a-zA-Z0-9]{36}`), // Refresh token
 
+	// GitLab token patterns
+	regexp.MustCompile(`glpat-[a-zA-Z0-9_-]{20}`), // Personal access token
+	regexp.MustCompile(`glcbt-[a-zA-Z0-9_-]{20}`), // CI/CD job token
+	regexp.MustCompile(`glrt-[a-zA-Z0-9_-]{20}`),  // Runner registration token
+	regexp.MustCompile(`gldt-[a-zA-Z0-9_-]{20}`),  // Deploy token
+
 	// Anti-forensics / secure deletion (malware's dead man switch)
 	regexp.MustCompile(`shred\s+-[a-z]*u`),   // Linux secure delete
 	regexp.MustCompile(`cipher\s+/W:`),       // Windows secure delete
@@ -142,6 +148,15 @@ func (hs *HistoryScanner) ScanGitCredentials() {
 				Path:        credFile,
 				Description: "GitHub token found in git credentials - may be compromised",
 				Details:     "Rotate this token via https://github.com/settings/tokens",
+			})
+		}
+		if bytes.Contains(content, []byte("glpat-")) {
+			hs.addFinding(Finding{
+				Type:        "EXPOSED_CREDENTIAL",
+				Severity:    "CRITICAL",
+				Path:        credFile,
+				Description: "GitLab token found in git credentials - may be compromised",
+				Details:     "Rotate this token via GitLab > Settings > Access Tokens",
 			})
 		}
 	}
